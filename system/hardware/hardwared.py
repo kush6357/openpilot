@@ -44,7 +44,7 @@ HardwareState = namedtuple("HardwareState", ['network_type', 'network_info', 'ne
 if HARDWARE.get_device_type() == "mici":
   THERMAL_BANDS = OrderedDict({
     ThermalStatus.ok: ThermalBand(None, 100.0),
-    ThermalStatus.overheated: ThermalBand(92.0, 107.),
+    ThermalStatus.overheated: ThermalBand(92.0, 130.),
     ThermalStatus.critical: ThermalBand(98.0, None),
   })
 else:
