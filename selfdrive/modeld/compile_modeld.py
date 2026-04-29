@@ -99,6 +99,8 @@ def make_input_queues(vision_input_shapes, policy_input_shapes, frame_skip):
     'tfm': np.zeros((3, 3), dtype=np.float32),
     'big_tfm': np.zeros((3, 3), dtype=np.float32),
   }
+  if 'action_t' in policy_input_shapes:
+    npy['action_t'] = np.zeros(policy_input_shapes['action_t'], dtype=np.float32)
   input_queues = {
     'img_q': Tensor.zeros(img_buf_shape, dtype='uint8').contiguous().realize(),
     'big_img_q': Tensor.zeros(img_buf_shape, dtype='uint8').contiguous().realize(),
@@ -122,18 +124,19 @@ def sample_desire(buf, frame_skip):
   return buf.reshape(-1, frame_skip, *buf.shape[1:]).max(1).flatten(0, 1).unsqueeze(0)
 
 
-def make_run_policy(vision_runner, policy_runner, nv12: NV12Frame, model_w, model_h,
+def make_run_policy(vision_runner, off_policy_runner, on_policy_runner, nv12: NV12Frame, model_w, model_h,
                     vision_features_slice, frame_skip, prepare_only=False):
   frame_prepare = make_frame_prepare(nv12, model_w, model_h)
   sample_skip_fn = partial(sample_skip, frame_skip=frame_skip)
   sample_desire_fn = partial(sample_desire, frame_skip=frame_skip)
 
-  def run_policy(img_q, big_img_q, feat_q, desire_q, desire, traffic_convention, tfm, big_tfm, frame, big_frame):
+  def run_policy(img_q, big_img_q, feat_q, desire_q, desire, traffic_convention, action_t, tfm, big_tfm, frame, big_frame):
     tfm = tfm.to(Device.DEFAULT)
     big_tfm = big_tfm.to(Device.DEFAULT)
     desire = desire.to(Device.DEFAULT)
     traffic_convention = traffic_convention.to(Device.DEFAULT)
-    Tensor.realize(tfm, big_tfm, desire, traffic_convention)
+    action_t = action_t.to(Device.DEFAULT)
+    Tensor.realize(tfm, big_tfm, desire, traffic_convention, action_t)
 
     img = shift_and_sample(img_q, frame_prepare(frame, tfm).unsqueeze(0), sample_skip_fn)
     big_img = shift_and_sample(big_img_q, frame_prepare(big_frame, big_tfm).unsqueeze(0), sample_skip_fn)
@@ -147,30 +150,40 @@ def make_run_policy(vision_runner, policy_runner, nv12: NV12Frame, model_w, mode
     feat_buf = shift_and_sample(feat_q, new_feat, sample_skip_fn)
     desire_buf = shift_and_sample(desire_q, desire.reshape(1, 1, -1), sample_desire_fn)
 
-    inputs = {'features_buffer': feat_buf, 'desire_pulse': desire_buf, 'traffic_convention': traffic_convention}
-    policy_out = next(iter(policy_runner(inputs).values())).cast('float32')
+    inputs = {
+      'features_buffer': feat_buf,
+      'desire_pulse': desire_buf,
+      'traffic_convention': traffic_convention,
+      'action_t': action_t,
+    }
+    on_policy_out = next(iter(on_policy_runner(inputs).values())).cast('float32')
+    off_policy_out = next(iter(off_policy_runner(inputs).values())).cast('float32')
 
-    return vision_out, policy_out
+    return vision_out, on_policy_out, off_policy_out
   return run_policy
 
 
 def compile_modeld(nv12: NV12Frame, model_w, model_h, prepare_only, frame_skip,
-                   vision_onnx, policy_onnx, pkl_path):
+                   vision_onnx, off_policy_onnx, on_policy_onnx, pkl_path):
   from get_model_metadata import metadata_path_for
 
   print(f"Compiling combined policy JIT for {nv12.width}x{nv12.height} (prepare_only={prepare_only})...")
 
   vision_runner = OnnxRunner(vision_onnx)
-  policy_runner = OnnxRunner(policy_onnx)
+  off_policy_runner = OnnxRunner(off_policy_onnx)
+  on_policy_runner = OnnxRunner(on_policy_onnx)
 
   with open(metadata_path_for(vision_onnx), 'rb') as f:
     vision_metadata = pickle.load(f)
     vision_features_slice = vision_metadata['output_slices']['hidden_state']
     vision_input_shapes = vision_metadata['input_shapes']
-  with open(metadata_path_for(policy_onnx), 'rb') as f:
+  with open(metadata_path_for(on_policy_onnx), 'rb') as f:
     policy_input_shapes = pickle.load(f)['input_shapes']
+  with open(metadata_path_for(off_policy_onnx), 'rb') as f:
+    off_policy_input_shapes = pickle.load(f)['input_shapes']
+  assert policy_input_shapes == off_policy_input_shapes
 
-  _run = make_run_policy(vision_runner, policy_runner, nv12, model_w, model_h,
+  _run = make_run_policy(vision_runner, off_policy_runner, on_policy_runner, nv12, model_w, model_h,
                          vision_features_slice, frame_skip, prepare_only)
   run_policy_jit = TinyJit(_run, prune=True)
 
@@ -240,7 +253,8 @@ if __name__ == "__main__":
   p.add_argument('--nv12', type=_parse_nv12, required=True,
                  help=f'NV12 frame layout: {",".join(NV12Frame._fields)}')
   p.add_argument('--vision-onnx', required=True)
-  p.add_argument('--policy-onnx', required=True)
+  p.add_argument('--off-policy-onnx', required=True)
+  p.add_argument('--on-policy-onnx', required=True)
   p.add_argument('--output', required=True)
   p.add_argument('--prepare-only', action='store_true')
   p.add_argument('--frame-skip', type=int, required=True)
@@ -248,4 +262,4 @@ if __name__ == "__main__":
 
   model_w, model_h = args.model_size
   compile_modeld(args.nv12, model_w, model_h, args.prepare_only, args.frame_skip,
-                 args.vision_onnx, args.policy_onnx, args.output)
+                 args.vision_onnx, args.off_policy_onnx, args.on_policy_onnx, args.output)
