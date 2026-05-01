@@ -151,7 +151,7 @@ wheels = [
 [[package]]
 name = "catch2"
 version = "2.13.10"
-source = { git = "https://github.com/commaai/dependencies.git?subdirectory=catch2&rev=release-catch2#419106e82a8dfb86b3252935c94cefb4570cd395" }
+source = { git = "https://github.com/commaai/dependencies.git?subdirectory=catch2&rev=release-catch2#7a05367ad5e3705a23f00ebc41b629960b8996b0" }
 
 [[package]]
 name = "certifi"
